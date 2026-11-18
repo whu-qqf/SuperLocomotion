@@ -18,3 +18,6 @@ using PyPI, NVIDIA's Python index and PyTorch's CUDA 13.0 wheel index. Consult t
 simulator installation instructions before reproducing that environment.
 Use an editable installation of this repository afterward. This inventory was
 made portable during cleanup; installation on a fresh machine has not been tested.
+
+For the complete source checkout, installation, activation and diagnostic commands,
+follow [the quickstart guide](../docs/quickstart.md).

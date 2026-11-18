@@ -24,6 +24,8 @@ keyboard entrypoints were removed from the active tree. Shared infrastructure an
 
 ## Environment
 
+For a new checkout, follow the complete [clone-to-training guide](quickstart.md).
+
 Use Linux, Python 3.12 and CUDA 13-compatible NVIDIA drivers. The validated local
 runtime uses the following source revisions:
 
@@ -43,19 +45,17 @@ has not been validated. A CUDA device is required for simulation. The
 versions and source paths through environment variables; it is an installation
 inventory for an already prepared simulator environment.
 
-On the original training server, the existing activation script additionally
-sets the source search paths:
+After installing the pinned runtime and source checkouts, the portable activation
+script sets the source search paths:
 
 ```bash
-source logs/hiking_environment/activate.sh
-export PYGLET_HEADLESS=true OMP_NUM_THREADS=2
+source tools/activate_hiking.sh
 # Select an available GPU according to your server's allocation.
 export CUDA_VISIBLE_DEVICES=0
 ```
 
-The activation script and virtual environments are local runtime artifacts and
-are not included in Git. On a new machine, activate your own prepared environment
-and make the installed Isaac Lab and Instinct-RL source packages importable.
+The activation script is included in Git; virtual environments and dependency
+checkouts are not. Its default layout is documented in the quickstart guide.
 No source changes relative to the pinned Isaac Lab and Newton archives were
 found when preparing this release.
 
@@ -132,7 +132,7 @@ remain challenging; gait quality is not established by survival alone.
 - `source/instinctlab/instinctlab/tasks/parkour/supermimic/`: native learner,
   perception, physics, replay, rewards and audits.
 - `source/instinctlab/instinctlab_supermimic/`: neural networks, depth controller,
-  physical state utilities and optional reference helpers.
+  physical state and sensor rotation utilities.
 - `source/instinctlab/test/`: current regression tests.
 - `configs/hiking/` and `docs/results/`: compact configuration and result records.
 - `logs/`, `.venv*/`, `external/`, checkpoints and datasets: ignored local artifacts.

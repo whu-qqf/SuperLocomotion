@@ -9,7 +9,8 @@ include the upstream shadowing, BeyondMimic, InstantTrack or motion-imitation
 tasks. The deployed controller uses proprioceptive history and depth; the
 physical world model additionally queries privileged terrain during training.
 
-- [Installation, training and evaluation](docs/hiking.md)
+- [Start here: clone, install, check and train](docs/quickstart.md)
+- [Architecture, training and evaluation details](docs/hiking.md)
 - [Final 2,048-environment configuration](configs/hiking/tgi_sgs_2048.json)
 - [14,000-iteration training results](docs/results/hiking_14000.json)
 
