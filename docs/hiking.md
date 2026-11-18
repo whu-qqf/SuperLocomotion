@@ -24,7 +24,7 @@ keyboard entrypoints were removed from the active tree. Shared infrastructure an
 
 ## Environment
 
-For a new checkout, follow the complete [clone-to-training guide](quickstart.md).
+For a new checkout, follow the complete [environment and installation steps in the root README](../README.md#environment).
 
 Use Linux, Python 3.12 and CUDA 13-compatible NVIDIA drivers. The validated local
 runtime uses the following source revisions:
