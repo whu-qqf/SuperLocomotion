@@ -178,9 +178,9 @@ class PoseVelocityCommand(CommandTerm):
         if isinstance(env_ids, slice):
             env_ids = torch.arange(self.num_envs, device=self.device)[env_ids]
         sgs = getattr(self._env, "_hiking_sgs", None)
-        if sgs is not None:
-            # SGS can change terrain columns. Refresh ranges and mode for the
-            # newly selected type before sampling its command.
+        if sgs is not None or self.cfg.velocity_ranges is not None:
+            # SGS and fixed-terrain evaluation can change terrain columns.
+            # Refresh ranges and mode before sampling the new type's command.
             generator = self.terrain.cfg.terrain_generator
             names = list(generator.sub_terrains)
             proportions = torch.tensor(

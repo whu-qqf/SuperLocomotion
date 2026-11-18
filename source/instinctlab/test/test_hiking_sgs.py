@@ -2,6 +2,8 @@
 
 import torch
 
+import pytest
+
 from instinctlab.tasks.parkour.mdp.sgs import SuccessGuidedSampler
 
 
@@ -121,7 +123,8 @@ def test_reset_assignment_spawn_and_zero_length_resets_do_not_record_outcomes():
     assert state["sampler"].count.sum() == 2
 
 
-def test_command_refreshes_type_ranges_and_keeps_sampled_travel_sector():
+@pytest.mark.parametrize("use_sgs", [False, True])
+def test_command_refreshes_type_ranges_and_keeps_sampled_travel_sector(use_sgs):
     from types import SimpleNamespace as NS
 
     from instinctlab.tasks.parkour.mdp.commands.pose_velocity_command import PoseVelocityCommand
@@ -131,6 +134,8 @@ def test_command_refreshes_type_ranges_and_keeps_sampled_travel_sector():
     state = _state(env)
     state["config_ids"][:] = torch.tensor([0, 1])  # different direction sectors
     state["travel"][:] = torch.tensor([-2.5, -0.8])
+    if not use_sgs:
+        del env._hiking_sgs
     env.scene.terrain.terrain_types[:] = torch.tensor([0, 1])
     ranges = {
         name: {"lin_vel_x": value, "lin_vel_y": (0.0, 0.0), "ang_vel_z": (-1.0, 1.0)}
@@ -163,4 +168,5 @@ def test_command_refreshes_type_ranges_and_keeps_sampled_travel_sector():
     assert command.random_velocity_indices.tolist() == [False, True]
     angle = torch.atan2(command.pos_command_w[:, 1], command.pos_command_w[:, 0])
     sector = ((angle + torch.pi) / (torch.pi / 2)).long()
-    assert sector.tolist() == [0, 1]
+    if use_sgs:
+        assert sector.tolist() == [0, 1]
