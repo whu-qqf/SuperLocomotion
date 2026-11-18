@@ -1,0 +1,47 @@
+{
+  "task": "Instinct-Parkour-Target-Amp-G1-Newton-v0",
+  "num_envs": 2048,
+  "seed": 1652,
+  "settings": {
+    "use_amp": false,
+    "world_model_heightmap": true,
+    "terrain_locomotion": true,
+    "imagined_camera": true,
+    "tgi_depth": true,
+    "tgi_aligned": true,
+    "policy_microbatch": 2048,
+    "tracking_reference_dir": "",
+    "paired_reference_dir": "",
+    "collect_steps": 3,
+    "warmup_steps": 64,
+    "replay_steps": 200,
+    "model_only_iterations": 300,
+    "model_updates": 8,
+    "model_batch": 2048,
+    "model_horizon": 8,
+    "actor_batch": 2048,
+    "style_batch": 128,
+    "learning_rate": 0.0002,
+    "exploration_std": 0.1,
+    "hidden": [
+      1024,
+      1024,
+      1024
+    ],
+    "policy": {
+      "horizon": 32,
+      "gamma": 0.99,
+      "lam": 0.95,
+      "critic_epochs": 5,
+      "critic_minibatches": 4,
+      "use_failure_head": false,
+      "failure_clip": 0.95,
+      "touchdown_cut_threshold": 0.3
+    }
+  },
+  "execution": {
+    "precision": "bf16",
+    "compile_mode": "eager"
+  },
+  "reference": null
+}

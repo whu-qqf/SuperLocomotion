@@ -1,0 +1,209 @@
+import copy
+import os
+from pathlib import Path
+
+from isaaclab_visualizers.kit import KitBackendCfg
+
+from isaaclab.managers import SceneEntityCfg
+from isaaclab.utils.configclass import configclass
+from isaaclab.visualizers import VisualizerCfg, WindowCfg
+
+import instinctlab.tasks.parkour.mdp as mdp
+from instinctlab.assets.unitree_g1 import (
+    G1_29DOF_LINKS,
+    G1_29DOF_POLICY_JOINT_ORDER_V1,
+    G1_29DOF_TORSOBASE_POPSICLE_CFG,
+    G1_29Dof_TorsoBase_symmetric_augmentation_joint_mapping,
+    G1_29Dof_TorsoBase_symmetric_augmentation_joint_reverse_buf,
+    beyondmimic_g1_29dof_actuators,
+    beyondmimic_g1_29dof_delayed_actuators,
+)
+from instinctlab.motion_reference import MotionReferenceManagerCfg
+from instinctlab.motion_reference.motion_files.amass_motion_cfg import AmassMotionCfg as AmassMotionCfgBase
+from instinctlab.motion_reference.utils import motion_interpolate_bilinear
+from instinctlab.sensors import get_link_prim_targets
+from instinctlab.tasks.parkour.config.parkour_env_cfg import ROUGH_TERRAINS_CFG, ParkourEnvCfg
+from instinctlab.tasks.utils.backends import backend_preset, backend_viewers
+from instinctlab.tasks.utils.newton import InstinctNewtonBackendCfg, InstinctNewtonVisualizerCfg
+from instinctlab.utils.config import set_cfg_joint_order
+from instinctlab.utils.urdf import urdf_importer_link_prim_path
+
+__file_dir__ = os.path.dirname(os.path.realpath(__file__))
+G1_CFG = copy.deepcopy(G1_29DOF_TORSOBASE_POPSICLE_CFG)
+G1_CFG.init_state.pos = (0.0, 0.0, 0.9)
+G1_with_shoe_CFG = copy.deepcopy(G1_CFG)
+G1_with_shoe_CFG.spawn.asset_path = os.path.abspath(
+    f"{__file_dir__}/../../urdf/g1_29dof_torsoBase_popsicle_with_shoe.urdf"
+)
+
+
+def _hiking_motion_reference_dir() -> str:
+    """Resolve the bundled release data without hiding a missing external dataset."""
+    configured = os.environ.get("HIKING_MOTION_REFERENCE_DIR")
+    if configured:
+        return os.path.expanduser(configured)
+    default = Path(os.path.expanduser("~/Datasets/hiking-in-the-wild_Data&Model/data&model/parkour_motion_reference"))
+    if default.is_dir():
+        return str(default)
+    for parent in Path(__file__).resolve().parents:
+        bundled = parent / "logs/hiking_data/release/data&model/parkour_motion_reference"
+        if bundled.is_dir():
+            return str(bundled)
+    return str(default)
+
+
+@configclass
+class AmassMotionCfg(AmassMotionCfgBase):
+    path = _hiking_motion_reference_dir()
+    retargetting_func = None
+    filtered_motion_selection_filepath = os.path.join(path, "parkour_motion_without_run.yaml")
+    motion_start_from_middle_range = [0.0, 0.9]
+    motion_start_height_offset = 0.0
+    ensure_link_below_zero_ground = False
+    buffer_device = "output_device"
+    motion_interpolate_func = motion_interpolate_bilinear
+    velocity_estimation_method = "frontward"
+
+
+motion_reference_cfg = MotionReferenceManagerCfg(
+    prim_path="{ENV_REGEX_NS}/Robot",
+    robot_model_path=G1_CFG.spawn.asset_path,
+    reference_prim_path="/World/envs/env_[^/]+/RobotReference",
+    symmetric_augmentation_link_mapping=[0, 1, 3, 2, 5, 4, 7, 6, 9, 8, 11, 10, 13, 12],
+    symmetric_augmentation_joint_mapping=G1_29Dof_TorsoBase_symmetric_augmentation_joint_mapping,
+    symmetric_augmentation_joint_reverse_buf=G1_29Dof_TorsoBase_symmetric_augmentation_joint_reverse_buf,
+    symmetric_augmentation_joint_names=list(G1_29DOF_POLICY_JOINT_ORDER_V1),
+    frame_interval_s=0.02,
+    update_period=0.02,
+    num_frames=10,
+    motion_buffers={
+        "run_walk": AmassMotionCfg(),
+    },
+    link_of_interests=[
+        "pelvis",
+        "torso_link",
+        "left_shoulder_roll_link",
+        "right_shoulder_roll_link",
+        "left_elbow_link",
+        "right_elbow_link",
+        "left_wrist_yaw_link",
+        "right_wrist_yaw_link",
+        "left_hip_roll_link",
+        "right_hip_roll_link",
+        "left_knee_link",
+        "right_knee_link",
+        "left_ankle_roll_link",
+        "right_ankle_roll_link",
+    ],
+    mp_split_method="Even",
+)
+
+
+ROUGH_TERRAINS_CFG_PLAY = copy.deepcopy(ROUGH_TERRAINS_CFG)
+for sub_terrain_name, sub_terrain_cfg in ROUGH_TERRAINS_CFG_PLAY.sub_terrains.items():
+    sub_terrain_cfg.wall_prob = [0.0, 0.0, 0.0, 0.0]
+
+
+@configclass
+class G1ParkourRoughEnvCfg(ParkourEnvCfg):
+    def __post_init__(self):
+        # post init of parent
+        super().__post_init__()
+        joint_order = list(G1_29DOF_POLICY_JOINT_ORDER_V1)
+        set_cfg_joint_order(self.actions.joint_pos, joint_order)
+        self.observations.policy.joint_pos.params["asset_cfg"] = set_cfg_joint_order(
+            SceneEntityCfg("robot"), joint_order
+        )
+        self.observations.policy.joint_vel.params["asset_cfg"] = set_cfg_joint_order(
+            SceneEntityCfg("robot"), joint_order
+        )
+        self.observations.critic.joint_pos.params["asset_cfg"] = set_cfg_joint_order(
+            SceneEntityCfg("robot"), joint_order
+        )
+        self.observations.critic.joint_vel.params["asset_cfg"] = set_cfg_joint_order(
+            SceneEntityCfg("robot"), joint_order
+        )
+        set_cfg_joint_order(self.observations.amp_policy.joint_pos_rel.params["asset_cfg"], joint_order)
+        set_cfg_joint_order(self.observations.amp_policy.joint_vel.params["asset_cfg"], joint_order)
+        set_cfg_joint_order(self.observations.amp_reference.joint_pos_rel.params["asset_cfg"], joint_order)
+        set_cfg_joint_order(self.observations.amp_reference.joint_vel.params["asset_cfg"], joint_order)
+
+        # Scene
+        self.scene.terrain.terrain_generator = ROUGH_TERRAINS_CFG
+        self.scene.robot = G1_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
+        self.scene.robot.actuators = beyondmimic_g1_29dof_delayed_actuators
+        self.scene.left_height_scanner.prim_path = urdf_importer_link_prim_path(
+            G1_CFG.spawn.asset_path, "left_ankle_roll_link"
+        )
+        self.scene.right_height_scanner.prim_path = urdf_importer_link_prim_path(
+            G1_CFG.spawn.asset_path, "right_ankle_roll_link"
+        )
+        # Newton's default BVH sensor ignores mesh_prim_paths and also hits the
+        # robot. These task-reward scanners must retain Hiking's ground-only
+        # query, as specified by their mesh_prim_paths=["/World/ground"].
+        for scanner in (self.scene.left_height_scanner, self.scene.right_height_scanner):
+            scanner.class_type = backend_preset(
+                scanner.class_type,
+                newton="isaaclab_newton.sensors.ray_caster.legacy_ray_caster:LegacyRayCaster",
+            )
+        self.scene.camera.prim_path = urdf_importer_link_prim_path(G1_CFG.spawn.asset_path, "torso_link")
+        self.scene.camera.mesh_prim_paths.extend(get_link_prim_targets(G1_29DOF_LINKS, G1_CFG.spawn.asset_path))
+        self.scene.motion_reference = motion_reference_cfg
+
+
+class ShoeConfigMixin:
+    def apply_shoe_config(self):
+        self.scene.robot = G1_with_shoe_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
+        self.scene.leg_volume_points.points_generator.z_min = -0.063
+        self.scene.leg_volume_points.points_generator.z_max = -0.023
+        self.rewards.rewards.feet_at_plane.params["height_offset"] = 0.058
+
+
+@configclass
+class G1ParkourRoughEnvCfg_PLAY(G1ParkourRoughEnvCfg):
+    def __post_init__(self):
+        # post init of parent
+        super().__post_init__()
+        self.scene.terrain.terrain_generator = ROUGH_TERRAINS_CFG_PLAY
+        # make a smaller scene for play
+        self.scene.num_envs = 10
+        self.sim.visualizer_cfgs = backend_viewers(
+            VisualizerCfg(
+                backend=KitBackendCfg(origin_type="asset", origin_track_path="robot"),
+                eye=(4.0, 0.75, 1.0),
+                lookat=(0.0, 0.75, 0.0),
+                window=WindowCfg(size=(1280, 720)),
+            ),
+            newton=InstinctNewtonVisualizerCfg(backend=InstinctNewtonBackendCfg(follow_body=True)),
+        )
+
+        self.scene.env_spacing = 2.5
+        self.episode_length_s = 10
+        self.terminations.root_height = None
+        # spawn the robot randomly in the grid (instead of their terrain levels)
+        # reduce the number of terrains to save memory
+        if self.scene.terrain.terrain_generator is not None:
+            self.scene.terrain.terrain_generator.num_rows = 4
+            self.scene.terrain.terrain_generator.num_cols = 10
+
+        self.scene.leg_volume_points.debug_vis = True
+        self.commands.base_velocity.debug_vis = True
+        self.events.physics_material = None
+        self.events.reset_robot_joints.params = {
+            "position_range": (0.0, 0.0),
+            "velocity_range": (0.0, 0.0),
+        }
+
+
+@configclass
+class G1ParkourEnvCfg(G1ParkourRoughEnvCfg, ShoeConfigMixin):
+    def __post_init__(self):
+        super().__post_init__()
+        self.apply_shoe_config()
+
+
+@configclass
+class G1ParkourEnvCfg_PLAY(G1ParkourRoughEnvCfg_PLAY, ShoeConfigMixin):
+    def __post_init__(self):
+        super().__post_init__()
+        self.apply_shoe_config()
