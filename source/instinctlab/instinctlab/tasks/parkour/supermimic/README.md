@@ -6,7 +6,6 @@ TGI-aligned policy updates and SGS sampling. See
 evaluation, result interpretation and the repository layout.
 
 Training enters through `native_latent_training.py`; evaluation through
-`native_latent_evaluation.py`. Shared physics, terrain, reward and replay helpers
-also support diagnostic and checkpoint compatibility paths. Historical teacher,
+`native_latent_evaluation.py`. Shared physics, terrain, reward and replay helpers support diagnostics and checkpoint compatibility. Historical teacher,
 dual-model and distillation entrypoints are archived locally and are not the
 recommended workflow.

@@ -6,8 +6,7 @@ resume inherits the saved execution settings unless explicitly overridden.
 
 BF16 autocasts only the world-model, Actor, Critic and depth encoder/decoder
 network kernels. Outputs return to float32 before state integration, geometry,
-reward and return computations. This is separate from `--amp`, which enables
-the adversarial motion prior and changes the learning objective.
+reward and return computations. The current Hiking task has no adversarial motion prior or imitation objective.
 
 Compilation targets the network forward methods and preserves module parameter
 identities and state-dict names. It does not compile the entire simulator,

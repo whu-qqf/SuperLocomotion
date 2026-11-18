@@ -44,13 +44,13 @@ def advance_contact_history(timers, events, dt, substeps):
 
 def foot_contact_rewards(state, command, foot_velocity, foot_quaternion, velocity_threshold):
     """Soft extensions of native single-support, slide and contact-flat rewards."""
-    from instinctlab.tasks.shadowing.supermimic.world_model_frames import _rotate_inverse
+    from instinctlab_supermimic.quaternion_xyzw import rotate_inverse
 
     # Native slide/flat use any force > 1N in the three-substep sensor history.
     contact = state[..., -9:].reshape(*state.shape[:-1], 3, 3)[..., :2].amax(-2)
     gravity = torch.zeros_like(foot_velocity)
     gravity[..., 2] = -1
-    projected = _rotate_inverse(foot_quaternion, gravity)
+    projected = rotate_inverse(foot_quaternion, gravity)
     return {
         "feet_air_time": foot_air_time_reward(state, command, velocity_threshold),
         "feet_slide": (foot_velocity[..., :2].norm(dim=-1) * contact).sum(-1),

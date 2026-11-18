@@ -7,17 +7,16 @@ version = "0.3.0"
 category = "isaaclab"
 readme  = "README.md"
 
-title = "Extension Template"
+title = "SuperLocomotion Hiking"
 author = "Isaac Lab Project Developers"
-maintainer = "Isaac Lab Project Developers"
-description="Extension Template for Isaac Lab"
-repository = "https://github.com/isaac-sim/IsaacLabExtensionTemplate.git"
-keywords = ["extension", "template", "isaaclab"]
+maintainer = "whu-qqf"
+description="Reference-free G1 Hiking locomotion with a physical world model and depth policy"
+repository = "https://github.com/whu-qqf/SuperLocomotion"
+keywords = ["hiking", "locomotion", "world-model", "isaaclab"]
 
 [dependencies]
 "isaaclab" = {}
 "isaaclab_assets" = {}
-"isaaclab_mimic" = {}
 "isaaclab_physx" = {}
 "isaaclab_rl" = {}
 "isaaclab_tasks" = {}

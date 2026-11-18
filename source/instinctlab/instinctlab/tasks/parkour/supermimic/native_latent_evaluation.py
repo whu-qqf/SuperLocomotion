@@ -16,7 +16,6 @@ import instinctlab.tasks  # noqa: F401
 from instinctlab.utils import instinct_rl_cli as cli
 
 from .action_gradient_audit import compare_probe_derivatives, first_action_derivative
-from .lafan_reference import configure_lafan_reference
 from .native_latent import NativeLatentRecorderCfg, camera_image, configure_without_amp
 from .native_perception import configure_native_perception
 from .native_physics import shoe_sole_points
@@ -292,20 +291,9 @@ def evaluate(vec, payload, steps, output, probes, reward_gradients=False, fixed_
         Path(env.scene["robot"].cfg.spawn.asset_path), device, ("left_ankle_roll_link", "right_ankle_roll_link")
     )
     terrain = native_height_field(env)
-    from instinctlab_supermimic.reference import REFERENCE_INPUT_DIM, ReferencePlayer, ReferenceWindows
 
-    bank = (
-        ReferenceWindows.from_state_dict(payload["reference_bank"], device)
-        if payload.get("reference_bank") is not None
-        else None
-    )
-    player = ReferencePlayer(bank, env.num_envs) if bank is not None else None
     actor, depth = (
-        DepthLatentPolicy(
-            REFERENCE_INPUT_DIM if bank is not None else 0, normalize_inputs=payload["cfg"].get("tgi_aligned", False)
-        )
-        .to(device)
-        .eval(),
+        DepthLatentPolicy(0, normalize_inputs=payload["cfg"].get("tgi_aligned", False)).to(device).eval(),
         DepthAutoencoder().to(device).eval(),
     )
     actor.load_state_dict(payload["modules"]["actor"])
@@ -345,7 +333,6 @@ def evaluate(vec, payload, steps, output, probes, reward_gradients=False, fixed_
     durations = torch.zeros(env.num_envs, device=device, dtype=torch.long)
     velocity_error = torch.zeros(env.num_envs, device=device)
     speed_sum = torch.zeros_like(velocity_error)
-    reference_controls = torch.zeros_like(velocity_error)
     final = initial.clone()
     reasons = {name: torch.zeros_like(alive) for name in env.termination_manager.active_terms}
     foot_sensor_ids = [
@@ -362,11 +349,6 @@ def evaluate(vec, payload, steps, output, probes, reward_gradients=False, fixed_
         with torch.no_grad():
             z = depth.encode(history.stack())
             features = None
-            if player is not None:
-                features, _, valid_reference = player.prepare(
-                    env.command_manager.get_command("base_velocity"), recorder.state()[:, 13:42]
-                )
-                reference_controls += (valid_reference & alive).float()
             action = actor(obs[:, :768], z, features).clamp(-20, 20)
         if reward_task is not None and step in (1, 20, 60):
             from .native_reward_audit import audit_native_rewards
@@ -416,8 +398,6 @@ def evaluate(vec, payload, steps, output, probes, reward_gradients=False, fixed_
             robot_data.root_com_pos_w.torch - robot_data.root_link_pos_w.torch,
         ).clone()
         obs, _, done, _ = vec.step(action)
-        if player is not None:
-            player.advance(done.nonzero(as_tuple=True)[0])
         transition = recorder.take_transition()
         state = transition.next_state
         contact = transition.contact_time[:, foot_sensor_ids] > 0
@@ -488,13 +468,9 @@ def evaluate(vec, payload, steps, output, probes, reward_gradients=False, fixed_
         terrain_column_names=terrain_column_names,
         original_rewards=not payload["cfg"].get("terrain_locomotion", False),
         terrain_locomotion=payload["cfg"].get("terrain_locomotion", False),
-        observation_noise_and_reset_randomization=(
-            "observation noise retained; default standing resets, no reference-state initialization"
-            if player is not None
-            else "retained from training"
-        ),
-        motion_tracking=player is not None,
-        reference_active_fraction=float(reference_controls.sum() / durations.sum()) if player is not None else 0.0,
+        observation_noise_and_reset_randomization="retained from training",
+        motion_tracking=False,
+        reference_active_fraction=0.0,
         mean_first_episode_seconds=float(seconds.mean()),
         min_first_episode_seconds=float(seconds.min()),
         max_first_episode_seconds=float(seconds.max()),
@@ -604,10 +580,13 @@ def main():
     payload = None
     if not args.replay_trace:
         payload = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
-        if payload["cfg"].get("paired_reference_dir"):
-            raise ValueError(
-                "Use instinctlab.tasks.parkour.supermimic.paired_evaluation for terrain-paired checkpoints."
-            )
+        if (
+            payload["cfg"].get("use_amp", False)
+            or payload["cfg"].get("tracking_reference_dir")
+            or payload["cfg"].get("paired_reference_dir")
+            or payload.get("reference_bank") is not None
+        ):
+            raise ValueError("Only reference-free Hiking checkpoints are supported.")
         if payload["format"] not in (
             "native_hiking_tgi_aligned_depth_v2",
             "native_hiking_tgi_terrain_depth_actor_v1",
@@ -639,10 +618,7 @@ def main():
         cfg.curriculum.terrain_levels = None
         cfg.scene.terrain.max_init_terrain_level = args.terrain_level
     cfg.evaluation_terrain = args.terrain
-    if payload is not None and payload["cfg"].get("use_amp", True):
-        configure_lafan_reference(cfg, "logs/hiking_data/lafan1_native_torso_v1")
-    else:
-        configure_without_amp(cfg)
+    configure_without_amp(cfg)
     cfg.scene.camera.update_period = cfg.sim.dt * cfg.decimation
     cfg.recorders = NativeLatentRecorderCfg()
     cfg.scene.num_envs = 1 if args.replay_trace else (args.num_envs or 32)

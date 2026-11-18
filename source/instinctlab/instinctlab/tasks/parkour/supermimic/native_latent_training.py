@@ -44,14 +44,6 @@ def main():
         action="store_true",
         help="Reference-free depth locomotion with terrain rewards and event returns.",
     )
-    parser.add_argument("--amp", action="store_true", help="Opt into the previous AMP experiment; disabled by default.")
-    parser.add_argument("--lafan_reference_dir", help="Verified native-torso LAFAN1 AMP library.")
-    parser.add_argument(
-        "--tracking_reference_dir", help="Explicit joint/foot/contact supervision without AMP (flat ground only)."
-    )
-    parser.add_argument(
-        "--paired_reference_dir", help="Measured motion/contact clips on their recorded collision terrain."
-    )
     for name in (
         "collect_steps",
         "model_batch",
@@ -79,12 +71,6 @@ def main():
         raise ValueError("An explicit positive --max_iterations budget is required.")
     if args.diagnostic and args.max_iterations != 1:
         raise ValueError("--diagnostic requires --max_iterations 1.")
-    if args.tracking_reference_dir and (args.amp or not args.flat_walk):
-        raise ValueError(
-            "Motion tracking currently requires --flat_walk and AMP disabled; LAFAN has no matched stair terrains."
-        )
-    if args.paired_reference_dir and (args.amp or args.flat_walk or args.tracking_reference_dir):
-        raise ValueError("Paired reference mode requires recorded terrain, no flat matching and AMP disabled.")
     cfg, _ = cli.resolve_train_cfg(args.task, overrides)
     configure_native_perception(cfg)
     configure_native_physics_audit(cfg)
@@ -107,27 +93,18 @@ def main():
 
             configure_sgs(cfg)
     reference = None
-    if args.lafan_reference_dir and not args.amp:
-        raise ValueError("--lafan_reference_dir requires --amp; default training does not use reference motions.")
-    if args.amp and args.lafan_reference_dir:
-        from .lafan_reference import configure_lafan_reference
-
-        reference = configure_lafan_reference(cfg, args.lafan_reference_dir)
-    elif args.amp:
-        reference = "Native Hiking AMP reference configuration."
-    if not args.amp:
-        configure_without_amp(cfg)
+    configure_without_amp(cfg)
     torch.manual_seed(cfg.seed)
     settings = NativeLatentCfg(
-        use_amp=args.amp,
+        use_amp=False,
         terrain_locomotion=args.terrain_locomotion,
         imagined_camera=args.imagined_camera,
         tgi_depth=args.tgi_depth,
         tgi_aligned=args.tgi_aligned,
         world_model_heightmap=args.tgi_depth,
         policy=NativePolicyUpdateCfg(touchdown_cut_threshold=0.3 if args.terrain_locomotion else 0.0),
-        tracking_reference_dir=str(Path(args.tracking_reference_dir).resolve()) if args.tracking_reference_dir else "",
-        paired_reference_dir=str(Path(args.paired_reference_dir).resolve()) if args.paired_reference_dir else "",
+        tracking_reference_dir="",
+        paired_reference_dir="",
     )
     if args.tgi_aligned:
         settings = replace(
@@ -200,7 +177,7 @@ def main():
             raise ValueError(
                 "Checkpoint F uses privileged heightmap inputs. Start fresh for the depth-only world model."
             )
-        if saved["use_amp"] != args.amp:
+        if saved["use_amp"]:
             raise ValueError("Checkpoint AMP setting differs. Start a fresh run to change the training objective.")
         if saved["tracking_reference_dir"] != settings.tracking_reference_dir:
             raise ValueError("Checkpoint motion tracking setting differs. Start fresh to change reference supervision.")
@@ -217,14 +194,6 @@ def main():
 
         cfg.terminations.critic_scan_out_of_bounds = TerminationTermCfg(func=native_scan_out_of_bounds, time_out=True)
     output = Path(args.output)
-    if settings.tracking_reference_dir:
-        from .motion_tracking_reference import configure_tracking_resets
-
-        configure_tracking_resets(cfg, settings.tracking_reference_dir, settings.policy.horizon)
-    elif settings.paired_reference_dir:
-        from .paired_environment import configure_paired_environment
-
-        configure_paired_environment(cfg, settings.paired_reference_dir, settings.policy.horizon)
     output.mkdir(parents=True, exist_ok=False)
     with launch_simulation(cfg, args):
         from instinctlab.utils.wrappers.instinct_rl.vecenv_wrapper import InstinctRlVecEnvWrapper
@@ -232,10 +201,6 @@ def main():
         vec = InstinctRlVecEnvWrapper(gym.make(args.task, cfg=cfg))
         try:
             runner = NativeLatentRunner(vec, settings)
-            if runner.reference_bank is not None:
-                reference = runner.reference_manifest
-            elif runner.paired_library is not None:
-                reference = runner.paired_library.contract
             if args.resume:
                 runner.load(args.checkpoint)
             elif args.initialize_from:
@@ -339,8 +304,7 @@ def main():
             runner.save(output / f"model_{runner.iteration}.pt", include_replay=False)
             runner.save(output / "latest.pt")
             runner.save_controller(output / "controller.pt")
-            # Tracking exports embed processed targets: no external dataset,
-            # physics, terrain or critic is needed for playback at inference.
+            # Deployment exports need only the depth encoder and actor.
             from instinctlab_supermimic.depth import load_depth_controller
             from instinctlab_supermimic.networks import run_mlp
 
@@ -349,14 +313,6 @@ def main():
             controller.history = runner.history
             with torch.no_grad():
                 features = None
-                if runner.reference_player is not None:
-                    features, _, _ = runner.reference_player.prepare(
-                        runner.task.command()["velocity"], runner.recorder.state()[:, 13:42]
-                    )
-                elif runner.paired_library is not None:
-                    from instinctlab_supermimic.physical import unflatten_state
-
-                    features, _ = runner.paired_conditions(unflatten_state(runner.recorder.state()))
                 expected = runner.actor(runner.obs[:, :768], runner.perception.encode(runner.history.stack()), features)
                 actual = controller.actor(
                     runner.obs[:, :768], run_mlp(controller.encoder, runner.history.stack()), features

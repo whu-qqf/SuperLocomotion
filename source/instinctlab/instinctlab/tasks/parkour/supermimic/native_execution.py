@@ -23,3 +23,13 @@ def configure_network_execution(runner, precision="float32", compile_mode="eager
             net.forward = torch.compile(net.forward, mode=compile_mode, dynamic=True)
     runner.execution = dict(precision=precision, compile_mode=compile_mode)
     return runner.execution
+
+
+def optimizer_step(loss, module, optimizer):
+    optimizer.zero_grad(set_to_none=True)
+    loss.backward()
+    norm = torch.nn.utils.clip_grad_norm_(module.parameters(), 1.0)
+    if not torch.isfinite(norm):
+        raise FloatingPointError("Nonfinite native supervised gradient; optimizer not stepped.")
+    optimizer.step()
+    return float(norm)

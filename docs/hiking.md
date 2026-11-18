@@ -18,10 +18,9 @@ The main entrypoints are:
 | Audit imagined camera | `scripts/instinct_rl/audit_hiking_imagined_camera.py` |
 | Audit recorded transitions | `scripts/instinct_rl/audit_hiking_replay.py` |
 
-The original InstinctLab tasks and baseline entrypoints remain available.
+Only the current Hiking task family is registered. Other upstream task families and their training tools are excluded.
 Experimental teacher, dual-model, substep-fitting, distillation and unfinished
-keyboard entrypoints were removed from the active tree. Shared helpers and
-checkpoint compatibility required by the current learner remain.
+keyboard entrypoints were removed from the active tree. Shared infrastructure and checkpoint compatibility required by the current learner remain.
 
 ## Environment
 
@@ -37,8 +36,7 @@ runtime uses the following source revisions:
 | PyTorch / TorchVision | 2.11.0+cu130 / 0.26.0+cu130 |
 | Warp / NumPy | 1.17.0 / 2.3.1 |
 
-Follow the upstream installation instructions in the root README, using these
-revisions. Install this repository with `python -m pip install -e source/instinctlab`.
+Follow the [upstream simulator installation instructions](https://github.com/project-instinct/InstinctLab#installation), using these revisions. Install this repository with `python -m pip install -e source/instinctlab`.
 The runtime uses Isaac Lab's dependency overrides; vanilla pip resolution alone
 has not been validated. A CUDA device is required for simulation. The
 `requirements/hiking-runtime.txt` file records the validated local package
@@ -79,7 +77,7 @@ terrain-conditioned world model, imagined camera, aligned objectives and SGS
 sampling. It uses 300 world-model warmup iterations, three collected control
 steps per iteration, eight model updates, actor batch 2048 and horizon 32.
 There are 20 critic updates per actor update. BF16 controls neural execution;
-it is unrelated to the optional adversarial motion prior (`--amp`).
+the adversarial motion prior and imitation CLI options are not supported.
 
 Each iteration collects 6,144 transitions. The environment control period is
 0.02 seconds. Iterations therefore cannot be compared directly with another
@@ -158,12 +156,11 @@ python -m pytest -q source/instinctlab/test/test_hiking* \
 pre-commit run --all-files
 ```
 
-Release preparation passed 191 Hiking tests, with one optional test skipped;
+The Hiking-only release passed 170 tests, with one optional test skipped;
 all repository pre-commit checks passed. Both maintained CLI help commands and
 CUDA inference with the final exported controller were also checked.
-The inherited shadowing suite passed 18 tests; its ten live-environment tests
-could not initialize because the external retargeted LAFAN dance dataset was
-absent. Those tests do not use the current reference-free Hiking workflow.
+The inherited motion-imitation task family, its tests and its dataset requirements
+are excluded from this repository. No LAFAN dataset is needed for the current task.
 
 This work builds on [InstinctLab](https://github.com/project-instinct/InstinctLab),
 [SuperMimic](https://github.com/HybridRobotics/supermimic) and TGI design ideas.

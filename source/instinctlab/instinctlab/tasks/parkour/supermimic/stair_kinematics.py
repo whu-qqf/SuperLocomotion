@@ -7,8 +7,25 @@ from pathlib import Path
 import pytorch_kinematics as pk
 
 from instinctlab.assets.unitree_g1 import G1_29DOF_POLICY_JOINT_ORDER_V1
-from instinctlab.tasks.shadowing.supermimic.config.g1.supermimic_plane_cfg import TRACKED_BODIES
-from instinctlab.tasks.shadowing.supermimic.world_model_frames import _mul, _rotate
+
+TRACKED_BODIES = [
+    "pelvis",
+    "torso_link",
+    "left_shoulder_roll_link",
+    "right_shoulder_roll_link",
+    "left_elbow_link",
+    "right_elbow_link",
+    "left_wrist_yaw_link",
+    "right_wrist_yaw_link",
+    "left_hip_roll_link",
+    "right_hip_roll_link",
+    "left_knee_link",
+    "right_knee_link",
+    "left_ankle_roll_link",
+    "right_ankle_roll_link",
+]
+from instinctlab_supermimic.quaternion_xyzw import multiply as _mul
+from instinctlab_supermimic.quaternion_xyzw import rotate as _rotate
 
 
 def matrix_quaternion(matrix):

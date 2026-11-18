@@ -5,9 +5,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 
 from instinctlab_perception.rssm import RSSMState
-from instinctlab_supermimic.paired_reference import paired_reference_features, paired_tracking_reward
 from instinctlab_supermimic.physical import flatten_state, unflatten_state
-from instinctlab_supermimic.reference import ReferencePlayer, tracking_reward
 from instinctlab_supermimic.rotations import mv, quat_to_mat, yaw_mat
 
 from .native_task import AMP_WIDTHS, POLICY_WIDTHS, flatten_history
@@ -89,6 +87,8 @@ def imagine_native(
     physical features enter P. The critic sees belief, interval phase and
     pending actions, including a partial final interval.
     """
+    if reference_bank is not None or paired_library is not None:
+        raise ValueError("Only reference-free Hiking imagination is supported.")
     visual = start.visual_latent is not None
     period, batch = (1 if visual else perception.cfg.action_steps), len(start.state)
     if horizon < 1 or (start.control_step.remainder(period) != 0).any():
@@ -142,20 +142,7 @@ def imagine_native(
     player = None
     paired_targets = None
     reference_features = None
-    if paired_library is not None:
-        if not visual or reference_bank is not None or set(start.reference_state) != {"clip_id", "frame", "terrain_id"}:
-            raise ValueError("Paired imagination needs visual state and explicit terrain/clip/frame.")
-        frames = start.reference_state["frame"][:, None] + torch.arange(horizon + 2, device=start.state.device)
-        paired_targets = paired_library.query(
-            start.reference_state["clip_id"], frames, start.command["origin"], start.reference_state["terrain_id"]
-        )
-        target = {name: value[:, 1] for name, value in paired_targets.items()}
-        reference_features = paired_reference_features(state[0], state[1], target, task.dt)
-    elif reference_bank is not None:
-        if not visual or not start.reference_state:
-            raise ValueError("Reference tracking requires a visual start with its real playback cursor.")
-        player = ReferencePlayer(reference_bank, batch, start.reference_state)
-    elif start.reference_state:
+    if start.reference_state:
         raise ValueError("Replay contains reference state but no reference library was supplied.")
 
     def record_value_state():
@@ -185,8 +172,6 @@ def imagine_native(
     velocity = start.command["velocity"]  # Native reward uses the pre-step latch.
     value_command = dict(start.command)
     supported = torch.ones(batch, dtype=torch.bool, device=start.state.device)
-    if player is not None:
-        reference_features, target, reference_valid = player.prepare(velocity.detach(), state[4].detach())
     record_value_state()
     for step in range(horizon):
         policy_inputs = (flatten_history(policy_history, POLICY_WIDTHS), belief)
@@ -221,10 +206,6 @@ def imagine_native(
         timers = task.advance_feet_timers(timers, contacts[..., -2:])
         termination = task.soft_termination(state, start.command, contacts)
         termination = torch.where(supported, termination, torch.ones_like(termination))
-        if paired_targets is not None:
-            frames = start.reference_state["frame"] + step + 1
-            ended = frames >= paired_library.lengths[start.reference_state["clip_id"]] - 1
-            termination = torch.where(ended, torch.ones_like(termination), termination)
         reward, terms = task.soft_reward(
             state,
             action,
@@ -248,46 +229,11 @@ def imagine_native(
                 touchdown_events(previous_foot_contact, contacts[..., -2:], unsupported, touchdown_cut_threshold)
             )
             previous_foot_contact = contacts[..., -2:]
-        if player is not None:
-            data = task.data(state, start.task_context)
-            feet = data.body_link_pos_w.torch[:, task.foot_ids]
-            local_feet = mv(yaw_mat(state[1]).transpose(-1, -2)[:, None], feet - state[0][:, None])
-            reference_reward, reference_terms = tracking_reward(
-                state[4], state[5], local_feet, contacts[:, -2:], target, reference_valid, task.dt
-            )
-            reward = reward + reference_reward
-            terms.update(reference_terms)
-            terms["reference_active"] = reference_valid.float()
-        elif paired_targets is not None:
-            target = {name: value[:, step + 1] for name, value in paired_targets.items()}
-            data = task.data(state, start.task_context)
-            reference_reward, reference_terms = paired_tracking_reward(
-                state, data.body_link_pos_w.torch[:, task.foot_ids], contacts[:, -2:], target, task.dt
-            )
-            reward = torch.where(target["valid"], reward + reference_reward, torch.zeros_like(reward))
-            terms.update(reference_terms)
         reward = torch.where(supported, reward, torch.zeros_like(reward))
         for name, value in terms.items():
             value = torch.where(supported, value, torch.zeros_like(value))
-            if paired_targets is not None:
-                value = torch.where(target["valid"], value, torch.zeros_like(value))
             reward_terms.setdefault(name, []).append(value)
-        if paired_targets is not None:
-            # The command at state t+1 belongs to the same recorded frame.
-            inverse = quat_to_mat(target["root_quat"]).transpose(-1, -2)
-            linear = mv(inverse, target["root_velocity"])
-            angular = mv(inverse, target["root_angular_velocity"])
-            velocity = torch.cat((linear[:, :2], angular[:, 2:3]), -1)
-            value_command.update(
-                velocity=velocity, random_velocity=velocity, maximum=velocity.abs(), target=target["root_pos"]
-            )
-            following = {name: value[:, step + 2] for name, value in paired_targets.items()}
-            reference_features = paired_reference_features(state[0], state[1], following, task.dt)
-        else:
-            velocity = task.velocity_command(state, start.command)
-        if player is not None:
-            player.advance()
-            reference_features, target, reference_valid = player.prepare(velocity.detach(), state[4].detach())
+        velocity = task.velocity_command(state, start.command)
         frame = task.proprio(state, action, velocity, start.task_context)
         if add_noise:
             frame = frame + (2 * torch.rand_like(frame) - 1) * task.policy_noise
@@ -326,6 +272,4 @@ def imagine_native(
         result["touchdown_events"] = torch.stack(touchdown_cuts, 1)
     result["reward_terms"] = {name: torch.stack(values, 1) for name, values in reward_terms.items()}
     result["perception_prior_ticks"] = 0 if visual else horizon // period
-    if paired_targets is not None:
-        result["reference_valid"] = paired_targets["valid"][:, 1 : horizon + 1]
     return result

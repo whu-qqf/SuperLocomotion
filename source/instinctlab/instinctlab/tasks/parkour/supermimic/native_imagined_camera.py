@@ -11,13 +11,14 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import warp as wp
+from instinctlab_supermimic.quaternion_xyzw import multiply as _mul
+from instinctlab_supermimic.quaternion_xyzw import rotate as _rotate
 
 from isaaclab.sensors.ray_caster import kernels
 from isaaclab.utils.warp import ProxyArray
 
 from instinctlab.sensors.grouped_ray_caster.grouped_kernels import raycast_mesh_table_min_distance_kernel
 from instinctlab.sensors.noisy_camera.noisy_camera import NoisyCameraMixin
-from instinctlab.tasks.shadowing.supermimic.world_model_frames import _mul, _rotate
 
 from .stair_kinematics import NativeLinkKinematics
 

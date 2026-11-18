@@ -1,7 +1,7 @@
 """Native Hiking single-model visual SuperMimic learner.
 
 No RSSM, old-policy initialization or PPO. Native
-Hiking generates commands/rewards; AMP is an optional legacy experiment.
+Hiking generates commands/rewards without motion imitation.
 The imagined-camera route predicts physical state, contacts and readouts,
 then queries depth at predicted poses. Raw camera histories seed each rollout.
 """
@@ -12,30 +12,22 @@ from dataclasses import asdict, dataclass, field
 
 from instinctlab_supermimic.depth import DEPTH_SHAPE, LATENT_DIM, DepthAutoencoder, DepthHistory, DepthLatentPolicy
 from instinctlab_supermimic.networks import Critic
-from instinctlab_supermimic.paired_reference import (
-    PAIRED_REFERENCE_INPUT_DIM,
-    paired_reference_features,
-    paired_tracking_reward,
-)
 from instinctlab_supermimic.physical import unflatten_state
-from instinctlab_supermimic.reference import REFERENCE_INPUT_DIM, ReferencePlayer, tracking_reward
 from instinctlab_supermimic.rotations import mv, yaw_mat
-from instinctlab_supermimic.style import StyleReward
 
 from isaaclab.managers import RecorderTermCfg
 from isaaclab.utils import configclass
 
 from instinctlab.envs.mdp.observations.exteroception import visualizable_image
 
+from .native_execution import optimizer_step
 from .native_imagination import CRITIC_HISTORY_DIM, NativeImaginationStart
 from .native_physics_audit import make_native_physics
 from .native_policy import NativePolicyUpdateCfg, update_native_policy
-from .native_runner import optimizer_step
 from .native_statistics import NativeEpisodeStatistics
 from .native_task import AMP_WIDTHS, POLICY_WIDTHS, NativeTaskHeads
 from .native_training_replay import NativeTrainingReplay, history_frames, select_rows
 from .native_transitions import HikingTransitionRecorder, NativeHikingRecorderCfg
-from .paired_environment import paired_environment_targets
 
 
 def camera_image(env):
@@ -101,25 +93,16 @@ class NativeLatentCfg:
     policy: NativePolicyUpdateCfg = field(default_factory=NativePolicyUpdateCfg)
 
     def __post_init__(self):
+        if self.use_amp or self.tracking_reference_dir or self.paired_reference_dir:
+            raise ValueError("This repository supports reference-free Hiking locomotion only.")
         if self.tgi_aligned and (not self.tgi_depth or self.policy_microbatch < 1):
             raise ValueError("Aligned TGI training requires terrain dynamics and a positive policy microbatch.")
         if self.tgi_depth and (not self.imagined_camera or not self.world_model_heightmap):
             raise ValueError("TGI depth requires imagined camera and privileged terrain model inputs.")
-        if self.imagined_camera and (
-            not self.terrain_locomotion or self.use_amp or self.tracking_reference_dir or self.paired_reference_dir
-        ):
+        if self.imagined_camera and not self.terrain_locomotion:
             raise ValueError("Imagined camera training requires reference-free terrain locomotion.")
-        if self.terrain_locomotion and (
-            self.use_amp
-            or self.tracking_reference_dir
-            or self.paired_reference_dir
-            or (self.world_model_heightmap and not self.tgi_depth)
-        ):
+        if self.terrain_locomotion and self.world_model_heightmap and not self.tgi_depth:
             raise ValueError("Terrain locomotion requires depth-only F, no AMP and no motion references.")
-        if self.use_amp and (self.tracking_reference_dir or self.paired_reference_dir):
-            raise ValueError("Explicit motion tracking and AMP are separate experiments.")
-        if self.tracking_reference_dir and self.paired_reference_dir:
-            raise ValueError("Flat matching and terrain-paired tracking cannot share a run.")
         if (
             min(
                 self.collect_steps,
@@ -171,27 +154,7 @@ class NativeLatentRunner:
         self.reference_bank = None
         self.reference_player = None
         self.paired_library = None
-        if cfg.paired_reference_dir:
-            from pathlib import Path
-
-            if Path(env.cfg.paired_reference_directory).resolve() != Path(cfg.paired_reference_dir).resolve():
-                raise ValueError("Paired learner and reset events must use the same dataset.")
-            self.paired_library = env._paired_player.library
-        if cfg.tracking_reference_dir:
-            from .motion_tracking_reference import tracking_bank_for_env
-
-            if not hasattr(env, "_tracking_reference_bank"):
-                raise ValueError("Configure reference reset events before constructing a tracking learner.")
-            self.reference_bank, self.reference_manifest = tracking_bank_for_env(
-                env, cfg.tracking_reference_dir, cfg.policy.horizon
-            )
-            self.reference_player = ReferencePlayer(self.reference_bank, env.num_envs)
-            self.reset_reference_player(torch.arange(env.num_envs, device=device))
-        reference_dim = (
-            PAIRED_REFERENCE_INPUT_DIM
-            if self.paired_library is not None
-            else REFERENCE_INPUT_DIM if self.reference_bank is not None else 0
-        )
+        reference_dim = 0
         self.actor = DepthLatentPolicy(
             reference_dim, detach_latent=not cfg.tgi_depth, normalize_inputs=cfg.tgi_aligned
         ).to(device)
@@ -203,28 +166,13 @@ class NativeLatentRunner:
             self.physics.context(env.action_manager.action),
         ).shape[-1]
         self.critic = Critic(physical_dim + CRITIC_HISTORY_DIM + LATENT_DIM + reference_dim).to(device)
-        self.style = (
-            StyleReward(
-                vec.get_obs_segments("amp_policy"),
-                device,
-                dict(hidden_sizes=[1024, 512], nonlinearity="ReLU"),
-                optimizer_kwargs=dict(lr=cfg.learning_rate, betas=[0.9, 0.999]),
-                reward_coef=0.25,
-                gradient_penalty_coef=5.0,
-                weight_decay_coef=3e-4,
-                logit_weight_decay_coef=0.04,
-            )
-            if cfg.use_amp
-            else None
-        )
+        self.style = None
         self.modules = dict(
             world_model=self.physics.model,
             depth=self.perception,
             actor=self.actor,
             critic=self.critic,
         )
-        if self.style is not None:
-            self.modules["style"] = self.style.discriminator
         # TGI gives F and depth separate ownership so policy returns can train
         # perception while F stays frozen. Older modes keep joint supervision.
         self.supervised = torch.nn.ModuleList([self.physics.model, self.perception])
@@ -239,8 +187,6 @@ class NativeLatentRunner:
         )
         if cfg.tgi_depth:
             self.optimizers["depth"] = torch.optim.Adam(self.perception.parameters(), lr=cfg.learning_rate)
-        if self.style is not None:
-            self.optimizers["style"] = self.style.optimizer
         self.update_counts = dict.fromkeys(self.optimizers, 0)
         for name, optimizer in self.optimizers.items():
             optimizer.register_step_post_hook(lambda opt, args, kwargs, key=name: self._count(key))
@@ -290,41 +236,6 @@ class NativeLatentRunner:
                 terrain_backward="bilinear",
                 sole_points="native_shoe_four_corners_v1",
             )
-        if self.reference_bank is not None:
-            import hashlib
-            from pathlib import Path
-
-            self.contract.update(
-                reference_input_dim=REFERENCE_INPUT_DIM,
-                reference_manifest_sha256=hashlib.sha256(
-                    (Path(cfg.tracking_reference_dir) / "manifest.json").read_bytes()
-                ).hexdigest(),
-                reference_reward="heading_local_joint_foot_contact_v1",
-                reference_initialization="80_percent_reference_20_percent_default_standing_v1",
-                reference_command_tolerance=self.reference_bank.tolerance.tolist(),
-                reference_window_steps=self.reference_bank.horizon,
-                reference_contact_labels="sole_below_004m_world_ankle_speed_below_02m_s_v1",
-            )
-        if self.paired_library is not None:
-            self.contract.update(
-                reference_input_dim=PAIRED_REFERENCE_INPUT_DIM,
-                paired_reference=self.paired_library.contract,
-                reference_reward="world_trajectory_full_joint_measured_contact_v1",
-                reference_initialization="terrain_bound_measured_pose_and_twist_v1",
-                reference_command="measured_torso_frame_velocity_v1",
-                reference_end="last_recorded_frame_no_bootstrap_v1",
-            )
-
-    def paired_conditions(self, state):
-        target = {name: value[:, 0] for name, value in paired_environment_targets(self.env, offset=1).items()}
-        return paired_reference_features(state[0], state[1], target, self.env.step_dt), target
-
-    def reset_reference_player(self, ids):
-        cursor = self.env._tracking_reset_cursor[ids]
-        valid = cursor >= 0
-        self.reference_player.state["cursor"][ids] = cursor.clamp_min(0)
-        self.reference_player.state["remaining"][ids] = valid.long() * self.reference_bank.horizon
-        self.reference_player.state["valid"][ids] = valid
 
     def _count(self, name):
         self.update_counts[name] += 1
@@ -355,18 +266,6 @@ class NativeLatentRunner:
                 control_step=self.env.episode_length_buf.long().clone(),
             )
             reference = None
-            if self.reference_player is not None:
-                reference, target, valid = self.reference_player.prepare(
-                    start["command"]["velocity"], start["state"][:, 13:42]
-                )
-                start["reference_state"] = {name: value.clone() for name, value in self.reference_player.state.items()}
-            elif self.paired_library is not None:
-                reference, target = self.paired_conditions(unflatten_state(start["state"]))
-                start["reference_state"] = dict(
-                    clip_id=self.env._paired_player.state["clip_id"].clone(),
-                    frame=(self.env._paired_start_frame + self.env.episode_length_buf).clone(),
-                    terrain_id=self.env._paired_player.terrain_ids.clone(),
-                )
             latent = self.perception.encode(depth)
             if self.cfg.tgi_aligned:
                 self.actor.proprio_norm.update(self.obs[:, :768])
@@ -375,32 +274,6 @@ class NativeLatentRunner:
             action = (action + self.cfg.exploration_std * torch.randn_like(action)).clamp(-20, 20)
             self.obs, reward, done, info = self.vec.step(action)
             transition = self.recorder.take_transition()
-            if self.reference_player is not None:
-                state = unflatten_state(transition.next_state)
-                data = self.task.data(state, start["task_context"])
-                feet = data.body_link_pos_w.torch[:, self.task.foot_ids]
-                local_feet = mv(yaw_mat(state[1]).transpose(-1, -2)[:, None], feet - state[0][:, None])
-                _, terms = tracking_reward(
-                    state[4],
-                    state[5],
-                    local_feet,
-                    self.physics.contact_targets(transition)[:, -2:],
-                    target,
-                    valid,
-                    self.env.step_dt,
-                )
-                terms["reference_active"] = valid.float()
-                for name, value in terms.items():
-                    reference_metrics[name] = reference_metrics.get(name, 0.0) + float(value.mean()) / count
-            elif self.paired_library is not None:
-                state = unflatten_state(transition.next_state)
-                data = self.task.data(state, start["task_context"])
-                feet = data.body_link_pos_w.torch[:, self.task.foot_ids]
-                _, terms = paired_tracking_reward(
-                    state, feet, self.physics.contact_targets(transition)[:, -2:], target, self.env.step_dt
-                )
-                for name, value in terms.items():
-                    reference_metrics[name] = reference_metrics.get(name, 0.0) + float(value.mean()) / count
             # The vec wrapper packs reward groups as N x G. Use the scalar
             # task group before adding N-valued terrain terms; broadcasting
             # N x 1 plus N would otherwise create an N x N reward matrix.
@@ -435,11 +308,6 @@ class NativeLatentRunner:
             self.physics.observe(type(transition)(**select_rows(vars(transition), pool)), context[pool])
             self.observations = info["observations"]
             learning = dict(start=start)
-            if self.style is not None:
-                learning.update(
-                    policy_window=self.observations["amp_policy"],
-                    reference_window=self.observations["amp_reference"],
-                )
             self.replay.add_transition(
                 transition,
                 context,
@@ -471,9 +339,6 @@ class NativeLatentRunner:
                 },
             )
             reset_ids = done.nonzero(as_tuple=True)[0]
-            if self.reference_player is not None:
-                self.reference_player.advance(reset_ids)
-                self.reset_reference_player(reset_ids)
             if len(reset_ids):
                 self.episodes[reset_ids] += 1
                 self.history.reset(reset_ids, camera_image(self.env))
@@ -688,9 +553,6 @@ class NativeLatentRunner:
             model_seconds += time.perf_counter() - sampled
         policy_started = time.perf_counter()
         style = {}
-        if self.style is not None:
-            real = self.replay.sample_real(self.cfg.style_batch, self.train_envs, self.env.device)
-            style = self.style.update(real["learning"]["policy_window"], real["learning"]["reference_window"])
         enabled = self.iteration >= self.cfg.model_only_iterations
         policy = None
         if enabled:
@@ -741,8 +603,6 @@ class NativeLatentRunner:
         )
         if self.cfg.tgi_depth:
             expected["depth"] = self.cfg.model_updates + int(enabled)
-        if self.style is not None:
-            expected["style"] = 1
         actual = {name: self.update_counts[name] - before[name] for name in before}
         if actual != expected:
             raise RuntimeError(f"Latent optimizer updates differ: {actual} != {expected}.")
@@ -779,7 +639,7 @@ class NativeLatentRunner:
                 optimizers={name: opt.state_dict() for name, opt in self.optimizers.items()},
                 update_counts=self.update_counts,
                 replay=self.replay.state_dict() if include_replay else None,
-                reference_bank=self.reference_bank.state_dict() if self.reference_bank is not None else None,
+                reference_bank=None,
                 sgs=sgs["sampler"].state_dict() if sgs is not None else None,
                 execution=getattr(self, "execution", {}),
             ),
@@ -848,17 +708,7 @@ class NativeLatentRunner:
         torch.save(
             dict(
                 format=(
-                    "hiking_depth_paired_controller_v1"
-                    if self.paired_library is not None
-                    else (
-                        "hiking_depth_reference_controller_v1"
-                        if self.reference_bank is not None
-                        else (
-                            "hiking_depth_latent_controller_v2"
-                            if self.cfg.tgi_aligned
-                            else "hiking_depth_latent_controller_v1"
-                        )
-                    )
+                    "hiking_depth_latent_controller_v2" if self.cfg.tgi_aligned else "hiking_depth_latent_controller_v1"
                 ),
                 depth=self.perception.encoder.state_dict(),
                 actor=self.actor.state_dict(),
@@ -867,8 +717,8 @@ class NativeLatentRunner:
                 proprio_layout="native_term_major_8x96",
                 joint_names=self.recorder.joint_names,
                 control_dt=self.env.step_dt,
-                reference_bank=self.reference_bank.state_dict() if self.reference_bank is not None else None,
-                paired_reference=self.paired_library.state_dict() if self.paired_library is not None else None,
+                reference_bank=None,
+                paired_reference=None,
             ),
             path,
         )

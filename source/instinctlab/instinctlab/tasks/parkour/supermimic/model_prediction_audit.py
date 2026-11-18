@@ -2,7 +2,7 @@
 
 import torch
 
-from instinctlab.tasks.shadowing.supermimic.config.g1.supermimic_plane_cfg import TRACKED_BODIES
+from .stair_kinematics import TRACKED_BODIES
 
 
 def audit_kinematic_loss_gradients(model, task, kinematics, initial, actions, context, targets):

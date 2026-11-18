@@ -17,6 +17,7 @@ from instinctlab_supermimic.networks import Critic, FailureHead
 from instinctlab_supermimic.physical import unflatten_state
 from instinctlab_supermimic.style import StyleReward
 
+from .native_execution import optimizer_step
 from .native_imagination import CRITIC_HISTORY_DIM, CRITIC_LAYOUT
 from .native_perception import observable_proprio
 from .native_physics_audit import make_native_physics
@@ -84,16 +85,6 @@ class NativeRunnerCfg:
             * self.physical_replay_ratio
             / (self.physical_updates * self.physical_batch * self.physical_horizon)
         )
-
-
-def optimizer_step(loss, module, optimizer):
-    optimizer.zero_grad(set_to_none=True)
-    loss.backward()
-    norm = torch.nn.utils.clip_grad_norm_(module.parameters(), 1.0)
-    if not torch.isfinite(norm):
-        raise FloatingPointError("Nonfinite native supervised gradient; optimizer not stepped.")
-    optimizer.step()
-    return float(norm)
 
 
 def native_failure_loss(true_logits, predicted_logits, terminated):

@@ -197,7 +197,7 @@ def main():
     parser.add_argument("--motion-directory", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
-    from instinctlab.tasks.shadowing.supermimic.config.g1.supermimic_plane_cfg import TRACKED_BODIES
+    from .stair_kinematics import TRACKED_BODIES
 
     collection = json.loads((args.replay_directory / "collection.json").read_text())
     replay = torch.load(args.replay_directory / "replay.pt", map_location="cpu", weights_only=True)
